@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Apr 14 19:44:06 2019
+
+@author: avigo
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import optimize
+
+
+## Set the filename
+csv_filename = 'matchupdata.csv'
+## Read the file into a pandas datafram
+data = pd.read_csv(csv_filename)
+
+## First things first lets get all the results
+atbat_results = data['Result']
+
+## Plot a histogram to see what's up -- again weights is to make it a percentage basically
+result_hist = plt.hist(atbat_results,bins=np.linspace(atbat_results.min(),atbat_results.max(),100),weights=np.ones_like(atbat_results)/len(atbat_results)) ## Data is VERY normal
+
+
+## Turn the results into a gaussian
+
+## Define a gaussian function
+def gaussian(x,mean,amplitude,stdv):
+    return amplitude * np.exp(- ((x-mean) / stdv) ** 2)
+
+## Want to fit a gaussian to the roughly sampled data, if we use too many bins we'll get funky results
+numbins = 100
+## Use a linear space between minimum and maximum result to get the centers of bins
+bin_centers, bin_step = np.linspace(atbat_results.min(),atbat_results.max(),numbins,retstep=True)
+## To get the edges of bins we then subtract half of the step and append the final edge of the final bin at atbat_results.max()
+bin_edges = bin_centers - (bin_step/2)
+bin_edges = np.append(bin_edges,atbat_results.max())
+
+bin_heights, bin_edgevals = np.histogram(atbat_results,bins=bin_edges,weights=np.ones_like(atbat_results)/len(atbat_results))
+
+## Now fit the data using scipy.optimize.curvefit
+popt, pcov = optimize.curve_fit(gaussian,bin_centers,bin_heights,p0=[1,0,100])
+
+plt.plot(bin_centers,gaussian(bin_centers,*popt)) #Fit looks absolutley perfect
+
+
+
+
+## Now we want information from each batter -- we know their indexes using dataframs
+batter_means, batter_stdvs = np.zeros(100), np.zeros(100)
+individual_batter_results = []
+for i in range(1,101):
+    batter_index = i
+    this_batter_result = np.asarray(data[data['batterID'] == batter_index]['Result'])
+    batter_means[i-1] = np.mean(this_batter_result)
+    batter_stdvs[i-1] = np.std(this_batter_result)
+    individual_batter_results.append(this_batter_result)
+
+
+## Do the same for pitchers -- we know thier indexes
+pitcher_means, pitcher_stdvs = np.zeros(100), np.zeros(100)
+individual_pitcher_results = []
+for j in range(101,201):
+    pitcher_index = j
+    this_pitcher_result = np.asarray(data[data['pitcherID'] == pitcher_index]['Result'])
+    pitcher_means[j-101] = np.mean(this_pitcher_result)
+    pitcher_stdvs[j-101] = np.std(this_pitcher_result)
+    individual_pitcher_results.append(this_pitcher_result)
+
+
+
+## Now we have all the information we could want and we will construct the covariance
+## First create the results space over which to integrate
+resultspace = np.linspace(atbat_results.min(),atbat_results.max(),800)
+## Now get overall probability of the result
+probabilityspace = gaussian(resultspace,*popt)
+## We need the integral of the probability space to come out to 1 so we divide by the value of the integral to be sure
+probabilityspace = probabilityspace/np.trapz(probabilityspace,resultspace)
+
+##Define the covariance matrix
+batter_pitcher_cov = np.zeros([100,100])
+for i in range(100):
+    #Set the batter -- corresponds to row
+    batter_i_mean = batter_means[i]
+    for j in range(100):
+        #Set the pitcher -- corresponds to column
+        pitcher_j_mean = pitcher_means[j]
+        
+        #Use our covariance equation to calculate all covariances 
+        cov_array = probabilityspace * (resultspace - batter_i_mean) * (resultspace - pitcher_j_mean)
+        
+        #Integrate and divide by number of points to get covariance
+        batter_pitcher_cov[i,j] = np.trapz(cov_array,resultspace) / (len(resultspace) - 1)
+        
+
+## We see that the batter/pitcher covariance ranges from -0.766 to 11.64 so not super significant compared to the overall stdv
+## For now when we select from the distribution we're going to actually use the covariance in quadrature
+
+
+
+
+
+## Now we're going to try a simple simulation just one set of 300
+## Create return arrays
+all_outcomes = np.zeros([100,300])
+pitchers_faced = np.zeros([100,300])
+outcome_chosen = np.zeros([100,300])
+
+## Iterate over each batter
+for i in range(100):
+    ## Get batter mean, std, and full result output
+    battermean = batter_means[i]
+    batterstdv = batter_stdvs[i]
+    batterresults = individual_batter_results[i]    
+        
+        
+    
+    
+    for j in range(300):
+        ## Randomly generate a number between 101, 200 corresponding to pitcher IDs
+        thispitcher = np.random.randint(101,201) #We use 201 because the high is exclusive for this function
+        ## Turn this number into an index that corresponds to our pitcher arrays        
+        pitcherindex = thispitcher - 101
+        ## Get the mean from the pitcher index
+        pitchermean = pitcher_means[pitcherindex]
+        pitcherstdv = pitcher_stdvs[pitcherindex]
+            
+        ## Use batter index and pitcher index to get covariance value
+        covariance_value = batter_pitcher_cov[i,pitcherindex]            
+        ## Sum the stdvs in quadrature to get the total
+        total_stdv = np.sqrt(np.square(batterstdv) + np.square(covariance_value))
+                
+        ## Now select from a normal distribution of this sample
+        random_bresult = np.random.normal(battermean,batterstdv)
+        random_presult = np.random.normal(pitchermean,pitcherstdv)
+        random_results = [random_bresult,random_presult]
+        ## Randomly generate 0 or 1 -- 0 is batter 1 is pitcher
+        choice_number = np.random.randint(0,2)
+    
+        random_result = random_results[choice_number]
+        ## Insert relevant quantities into return arrays
+        outcome_chosen[i,j] = choice_number
+        all_outcomes[i,j] = random_result
+        pitchers_faced[i,j] = thispitcher
+
+
+
+## Get the average outcome for each hitter
+ave_outcomes = np.mean(all_outcomes,axis=-1)
+## Standard deviation of outcomes (Should be close to same as before)
+std_outcomes = np.std(all_outcomes,axis=-1)
+
+
+
+plt.figure()
+plt.hist(ave_outcomes,bins=bin_edges)
+
+plt.xlabel("Average Batter Outcome")
+plt.ylabel("Number of Occurances")
+plt.title("Average Batter Outcome simulated over 300 appearances")
+plt.hist(batter_means,bins=bin_edges)
+
+plt.figure()
+plt.errorbar(np.arange(1,101),ave_outcomes,yerr=std_outcomes,color='k',marker='o',linestyle='none',label='Simulated Average w/Std')
+plt.errorbar(np.arange(1,101),batter_means,yerr=batter_stdvs,color='g',marker='x',linestyle='none',label='Data Average w/Std')
+plt.legend()
+plt.xlabel("batterID")
+plt.ylabel("Result Value")
+plt.title("Results by batterID")
+
+
+plt.figure()
+for i in range(300):
+    plt.scatter(np.arange(1,101),all_outcomes[:,i])
+plt.xlabel("Batter ID")
+plt.ylabel("Results")
+plt.title("All outcomes for each batter")
